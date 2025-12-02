@@ -87,14 +87,31 @@ async function ensureUploadDir() {
     }
 }
 
-// 初始化生产环境数据
+// 初始化生产环境数据 - 使用真实的classmate.txt
 async function initProductionData() {
     if (process.env.NODE_ENV === 'production') {
         try {
-            // 创建默认学生列表
+            // 尝试从项目根目录读取真实的classmate.txt
+            const realClassmatePath = path.join(__dirname, 'classmate.txt');
+            console.log('尝试读取真实学生名单:', realClassmatePath);
+            
+            try {
+                const realData = await fs.readFile(realClassmatePath, 'utf8');
+                const realStudents = realData.split(/[\r\n]+/).map(name => name.trim()).filter(name => name.length > 0);
+                console.log('读取到真实学生名单:', realStudents.length, '人');
+                
+                // 写入到临时目录
+                await fs.writeFile('/tmp/classmate.txt', realStudents.join('\n'), 'utf8');
+                console.log('✅ 成功加载真实学生名单到生产环境');
+                return;
+            } catch (readError) {
+                console.warn('⚠️ 无法读取真实学生名单文件，使用默认名单:', readError.message);
+            }
+            
+            // 如果读取失败，使用默认学生列表
             const defaultStudents = ['张三', '李四', '王五', '赵六', '钱七'];
             await fs.writeFile('/tmp/classmate.txt', defaultStudents.join('\n'), 'utf8');
-            console.log('初始化生产环境学生数据');
+            console.log('⚠️ 使用默认学生名单');
         } catch (error) {
             console.error('初始化生产数据失败:', error);
         }
@@ -112,13 +129,46 @@ async function loadMetadata() {
 
 async function loadStudents() {
     try {
-        const dataPath = process.env.NODE_ENV === 'production'
-            ? '/tmp/classmate.txt'
-            : path.join(__dirname, 'data', 'classmate.txt');
+        let dataPath;
+        if (process.env.NODE_ENV === 'production') {
+            // 生产环境首先尝试从临时目录读取
+            dataPath = '/tmp/classmate.txt';
+            try {
+                const data = await fs.readFile(dataPath, 'utf8');
+                const students = data.split(/[\r\n]+/).map(name => name.trim()).filter(name => name.length > 0);
+                if (students.length > 0) {
+                    console.log(`✅ 从临时目录加载 ${students.length} 名学生`);
+                    return students;
+                }
+            } catch (tmpError) {
+                console.warn('⚠️ 临时目录学生名单不存在，尝试从项目文件读取:', tmpError.message);
+            }
+            
+            // 如果临时目录没有，尝试从项目根目录读取
+            dataPath = path.join(__dirname, 'classmate.txt');
+            try {
+                const data = await fs.readFile(dataPath, 'utf8');
+                const students = data.split(/[\r\n]+/).map(name => name.trim()).filter(name => name.length > 0);
+                console.log(`✅ 从项目文件加载 ${students.length} 名学生`);
+                // 同时更新临时目录
+                await fs.writeFile('/tmp/classmate.txt', students.join('\n'), 'utf8');
+                return students;
+            } catch (projectError) {
+                console.warn('⚠️ 项目文件读取失败，使用默认名单:', projectError.message);
+            }
+        } else {
+            // 开发环境
+            dataPath = path.join(__dirname, 'classmate.txt');
+        }
+        
         const data = await fs.readFile(dataPath, 'utf8');
-        return data.split('\n').map(name => name.trim()).filter(name => name.length > 0);
+        const students = data.split(/[\r\n]+/).map(name => name.trim()).filter(name => name.length > 0);
+        console.log(`📚 学生名单加载完成，共 ${students.length} 人`);
+        return students;
+        
     } catch (error) {
-        // 如果没有学生文件，返回默认列表
+        console.warn('⚠️ 学生名单加载失败，使用默认名单:', error.message);
+        // 如果所有尝试都失败，返回默认列表
         return ['张三', '李四', '王五', '赵六', '钱七'];
     }
 }
@@ -156,17 +206,19 @@ app.get('/health', (req, res) => {
 // 获取学生列表
 app.get('/students', async (req, res) => {
     try {
+        console.log('🔍 开始加载学生列表...');
         const students = await loadStudents();
+        console.log('✅ 学生列表加载成功:', { count: students.length, names: students.slice(0, 5) });
         res.json({ success: true, students });
     } catch (error) {
-        console.error('Error loading students:', error);
+        console.error('❌ 加载学生列表失败:', error);
         res.status(500).json({ success: false, message: '加载学生列表失败' });
     }
 });
 
 // 文件上传接口 - 简化版本
 app.post('/upload', upload.single('file'), async (req, res) => {
-    console.log('上传请求开始:', {
+    console.log('📤 上传请求开始:', {
         hasFile: !!req.file,
         student: req.body?.student,
         contentType: req.get('Content-Type')
@@ -186,7 +238,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         const extension = path.extname(originalName).toLowerCase();
         const student = req.body.student.trim();
         
-        console.log('处理文件:', { originalName, extension, student, size: req.file.size });
+        console.log('📄 处理文件:', { originalName, extension, student, size: req.file.size });
         
         // 加载现有数据
         const metadata = await loadMetadata();
@@ -233,7 +285,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
             return res.status(500).json({ success: false, message: '保存文件信息失败' });
         }
 
-        console.log('文件上传成功:', { 
+        console.log('✅ 文件上传成功:', { 
             id: fileRecord.id, 
             name: fileRecord.originalName, 
             student: fileRecord.student 
@@ -247,7 +299,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         });
 
     } catch (error) {
-        console.error('上传错误详情:', error);
+        console.error('❌ 上传错误详情:', error);
         
         if (error.code === 'LIMIT_FILE_SIZE') {
             return res.status(400).json({ success: false, message: '文件大小超过限制 (最大50MB)' });
@@ -342,7 +394,7 @@ app.use((err, req, res, next) => {
 // 启动服务器
 app.listen(PORT, async () => {
     try {
-        console.log('正在启动服务器...');
+        console.log('🚀 正在启动服务器...');
         
         await ensureUploadDir();
         await initProductionData();
@@ -353,6 +405,10 @@ app.listen(PORT, async () => {
         console.log(`📁 上传方式: ${process.env.NODE_ENV === 'production' ? '内存存储' : '文件系统'}`);
         console.log(`📄 最大文件大小: ${MAX_FILE_SIZE / 1024 / 1024}MB`);
         console.log(`🔗 健康检查: http://localhost:${PORT}/health`);
+        
+        // 测试学生列表加载
+        const testStudents = await loadStudents();
+        console.log(`👥 测试学生列表加载: ${testStudents.length} 人`);
         
     } catch (error) {
         console.error('❌ 服务器启动失败:', error);
