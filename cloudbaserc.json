@@ -1,0 +1,28 @@
+# 腾讯云运行环境部署配置
+runtime: NodeJS 16.15
+env: production
+
+# 环境变量
+env_variables:
+  NODE_ENV: production
+  PORT: 8080
+  TMPDIR: /tmp
+
+# 资源配置
+resources:
+  cpu: 0.5
+  memory: 512Mi
+
+# 健康检查
+health_check:
+  http_path: /health
+  check_interval_sec: 30
+  timeout_sec: 5
+  healthy_threshold: 2
+  unhealthy_threshold: 3
+
+# 自动扩缩容
+autoscaling:
+  min_instances: 1
+  max_instances: 5
+  cpu_utilization: 70

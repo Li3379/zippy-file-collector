@@ -1,0 +1,32 @@
+# 腾讯云Serverless部署配置
+version: 1.0
+
+# 应用信息
+name: zippy-file-collector
+stage: production
+description: 简单的文件上传系统，支持50人左右的压缩文件上传
+
+# 运行环境
+runtime: Nodejs16.15
+memorySize: 512
+timeout: 60
+
+# 环境变量
+environment:
+  variables:
+    NODE_ENV: production
+    PORT: 8080
+    TMPDIR: /tmp
+
+# 函数配置
+function:
+  name: file-collector-api
+  handler: server.js
+  entryPoint: app.listen
+
+# 触发器配置
+triggers:
+  - type: http
+    description: HTTP API触发器
+    environments:
+      - release

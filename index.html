@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文件上传系统</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>文件上传系统</h1>
+            <p>支持压缩文件上传 (zip, rar, 7z, tar, gz)</p>
+        </header>
+
+        <main>
+            <section class="upload-section">
+                <h2>上传文件</h2>
+                
+                <div class="form-group">
+                    <label for="studentSelect">选择你的姓名：</label>
+                    <select id="studentSelect" required>
+                        <option value="">-- 请选择姓名 --</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="fileInput">选择文件：</label>
+                    <input type="file" id="fileInput" accept=".zip,.rar,.7z,.tar,.gz,.tar.gz" required>
+                    <small>支持的文件类型：.zip, .rar, .7z, .tar, .gz</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="description">文件描述（可选）：</label>
+                    <textarea id="description" rows="3" placeholder="请输入文件描述..."></textarea>
+                </div>
+
+                <button id="uploadBtn" disabled>上传文件</button>
+                
+                <div id="progressContainer" style="display: none;">
+                    <div class="progress-bar">
+                        <div id="progressFill"></div>
+                    </div>
+                    <p id="progressText">0%</p>
+                </div>
+
+                <div id="message"></div>
+            </section>
+
+            <section class="stats-section">
+                <div id="uploadStats"></div>
+            </section>
+
+            <section class="unuploaded-section">
+                <div id="unuploadedStudents"></div>
+            </section>
+
+            <section class="files-section">
+                <h2>已上传文件</h2>
+                <button id="refreshBtn">刷新列表</button>
+                <div id="filesList"></div>
+            </section>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

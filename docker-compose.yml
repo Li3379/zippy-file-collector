@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  file-collector:
+    build: .
+    container_name: zippy-file-collector
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # 持久化整个数据目录
+      - ./data:/app/data
+      # 持久化上传文件
+      - ./data/uploads:/app/data/uploads
+      # 日志目录
+      - ./logs:/app/logs
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - TZ=Asia/Shanghai
+    networks:
+      - file-collector-network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  file-collector-network:
+    driver: bridge
