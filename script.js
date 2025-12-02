@@ -14,22 +14,41 @@ class FileUploadSystem {
 
     async loadStudents() {
         try {
-            const response = await fetch('classmate.txt');
-            const text = await response.text();
-            this.students = text.split('\n')
-                .map(name => name.trim())
-                .filter(name => name.length > 0);
+            // 优先从API加载学生列表，如果失败则从文件加载
+            let response;
+            try {
+                response = await fetch('/students');
+                const data = await response.json();
+                if (data.success) {
+                    this.students = data.students;
+                    console.log(`✅ 从API加载学生名单: ${this.students.length} 人`);
+                } else {
+                    throw new Error('API返回失败');
+                }
+            } catch (apiError) {
+                console.warn('⚠️ API加载失败，尝试从文件加载:', apiError.message);
+                response = await fetch('classmate.txt');
+                const text = await response.text();
+                this.students = text.split('\n')
+                    .map(name => name.trim())
+                    .filter(name => name.length > 0);
+            }
             
             const select = document.getElementById('studentSelect');
+            // 清空现有选项
+            select.innerHTML = '<option value="">-- 请选择姓名 --</option>';
+            
             this.students.forEach(student => {
                 const option = document.createElement('option');
                 option.value = student;
                 option.textContent = student;
                 select.appendChild(option);
             });
+            
+            console.log(`📚 学生名单初始化完成: ${this.students.length} 人`);
         } catch (error) {
+            console.error('❌ 加载学生名单失败:', error);
             this.showMessage('加载学生名单失败', 'error');
-            console.error('Error loading students:', error);
         }
     }
 
@@ -64,7 +83,7 @@ class FileUploadSystem {
             const response = await fetch(`/student/${encodeURIComponent(selectedStudent)}`);
             const data = await response.json();
             
-            if (data.hasFile) {
+            if (data.success && data.hasFile) {
                 this.currentStudentFile = data.file;
                 this.enableUpdateMode();
             } else {
@@ -198,7 +217,7 @@ class FileUploadSystem {
 
         try {
             this.showProgress(true);
-            this.showMessage('', '');
+            this.showMessage('上传中...', 'success');
 
             const xhr = new XMLHttpRequest();
             
@@ -210,6 +229,8 @@ class FileUploadSystem {
             });
 
             xhr.addEventListener('load', () => {
+                console.log('上传响应:', xhr.status, xhr.responseText);
+                
                 if (xhr.status === 200) {
                     const response = JSON.parse(xhr.responseText);
                     if (response.success) {
@@ -217,6 +238,8 @@ class FileUploadSystem {
                         this.showMessage(`文件${action}成功！`, 'success');
                         this.resetForm();
                         this.loadFiles();
+                        // 重新加载学生列表以确保数据同步
+                        this.loadStudents();
                     } else {
                         this.showMessage(response.message || '操作失败', 'error');
                     }
@@ -236,6 +259,7 @@ class FileUploadSystem {
             });
 
             xhr.addEventListener('error', () => {
+                console.error('上传网络错误');
                 this.showMessage('网络错误，操作失败', 'error');
                 this.showProgress(false);
             });
@@ -244,6 +268,7 @@ class FileUploadSystem {
             xhr.send(formData);
 
         } catch (error) {
+            console.error('上传异常:', error);
             this.showMessage('操作失败：' + error.message, 'error');
             this.showProgress(false);
         }
@@ -263,16 +288,28 @@ class FileUploadSystem {
         
         progressFill.style.width = percent + '%';
         progressText.textContent = Math.round(percent) + '%';
+        
+        // 确保进度条到达100%后能够继续处理
+        if (percent >= 100) {
+            console.log('⏳ 上传完成，等待服务器响应...');
+        }
     }
 
     async loadFiles() {
         try {
+            console.log('🔄 开始加载文件列表...');
             const response = await fetch('/files');
             const data = await response.json();
-            this.displayFiles(data.files);
-            this.displayUnuploadedStudents(data.unuploadedStudents, data.totalStudents, data.uploadedCount, data.unuploadedCount);
+            
+            if (data.success) {
+                console.log(`✅ 文件列表加载成功: ${data.files.length} 个文件`);
+                this.displayFiles(data.files);
+                this.displayUnuploadedStudents(data.unuploadedStudents, data.totalStudents, data.uploadedCount, data.unuploadedCount);
+            } else {
+                throw new Error(data.message);
+            }
         } catch (error) {
-            console.error('Error loading files:', error);
+            console.error('❌ 加载文件列表失败:', error);
             this.showMessage('加载文件列表失败', 'error');
         }
     }
@@ -329,6 +366,7 @@ class FileUploadSystem {
             if (result.success) {
                 this.showMessage(`文件 "${fileName}" 删除成功`, 'success');
                 this.loadFiles(); // 重新加载文件列表
+                this.loadStudents(); // 重新加载学生列表
             } else {
                 this.showMessage(result.message || '删除失败', 'error');
             }
@@ -461,5 +499,6 @@ class FileUploadSystem {
 let fileSystem;
 
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('🚀 初始化文件上传系统...');
     fileSystem = new FileUploadSystem();
 });

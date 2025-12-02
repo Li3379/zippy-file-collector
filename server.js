@@ -59,10 +59,30 @@ const upload = multer({
     fileFilter: fileFilter
 });
 
-// 元数据文件路径
+// 元数据文件路径 - 修复路径问题
 const METADATA_FILE = process.env.NODE_ENV === 'production'
     ? '/tmp/file_metadata.json'
     : path.join(__dirname, 'data', 'file_metadata.json');
+
+// 确保目录存在
+async function ensureDirectories() {
+    if (process.env.NODE_ENV === 'production') {
+        try {
+            // 确保/tmp目录存在且可写
+            await fs.mkdir('/tmp', { recursive: true });
+            console.log('✅ /tmp 目录检查完成');
+        } catch (error) {
+            console.error('❌ 创建/tmp目录失败:', error);
+        }
+    } else {
+        try {
+            await fs.mkdir(path.join(__dirname, 'data'), { recursive: true });
+            console.log('✅ data目录检查完成');
+        } catch (error) {
+            console.error('❌ 创建data目录失败:', error);
+        }
+    }
+}
 
 async function ensureUploadDir() {
     if (process.env.NODE_ENV === 'production') {
@@ -91,27 +111,30 @@ async function ensureUploadDir() {
 async function initProductionData() {
     if (process.env.NODE_ENV === 'production') {
         try {
-            // 尝试从项目根目录读取真实的classmate.txt
-            const realClassmatePath = path.join(__dirname, 'classmate.txt');
-            console.log('尝试读取真实学生名单:', realClassmatePath);
+            // 确保classmate.txt文件存在
+            const classmatePath = path.join(__dirname, 'classmate.txt');
+            console.log('检查学生名单文件:', classmatePath);
             
             try {
-                const realData = await fs.readFile(realClassmatePath, 'utf8');
+                const realData = await fs.readFile(classmatePath, 'utf8');
                 const realStudents = realData.split(/[\r\n]+/).map(name => name.trim()).filter(name => name.length > 0);
-                console.log('读取到真实学生名单:', realStudents.length, '人');
                 
-                // 写入到临时目录
-                await fs.writeFile('/tmp/classmate.txt', realStudents.join('\n'), 'utf8');
-                console.log('✅ 成功加载真实学生名单到生产环境');
-                return;
+                if (realStudents.length > 0) {
+                    console.log(`✅ 读取到真实学生名单: ${realStudents.length} 人`);
+                    
+                    // 写入到临时目录
+                    await fs.writeFile('/tmp/classmate.txt', realStudents.join('\n'), 'utf8');
+                    console.log('✅ 学生名单已同步到生产环境');
+                } else {
+                    console.log('⚠️ 学生名单文件为空，使用默认名单');
+                    const defaultStudents = ['张三', '李四', '王五', '赵六', '钱七'];
+                    await fs.writeFile('/tmp/classmate.txt', defaultStudents.join('\n'), 'utf8');
+                }
             } catch (readError) {
                 console.warn('⚠️ 无法读取真实学生名单文件，使用默认名单:', readError.message);
+                const defaultStudents = ['张三', '李四', '王五', '赵六', '钱七'];
+                await fs.writeFile('/tmp/classmate.txt', defaultStudents.join('\n'), 'utf8');
             }
-            
-            // 如果读取失败，使用默认学生列表
-            const defaultStudents = ['张三', '李四', '王五', '赵六', '钱七'];
-            await fs.writeFile('/tmp/classmate.txt', defaultStudents.join('\n'), 'utf8');
-            console.log('⚠️ 使用默认学生名单');
         } catch (error) {
             console.error('初始化生产数据失败:', error);
         }
@@ -120,9 +143,13 @@ async function initProductionData() {
 
 async function loadMetadata() {
     try {
+        console.log('📖 读取元数据文件:', METADATA_FILE);
         const data = await fs.readFile(METADATA_FILE, 'utf8');
-        return JSON.parse(data);
+        const metadata = JSON.parse(data);
+        console.log(`✅ 成功读取 ${metadata.length} 条文件记录`);
+        return metadata;
     } catch (error) {
+        console.warn('⚠️ 元数据文件不存在或损坏，返回空列表:', error.message);
         return [];
     }
 }
@@ -149,10 +176,12 @@ async function loadStudents() {
             try {
                 const data = await fs.readFile(dataPath, 'utf8');
                 const students = data.split(/[\r\n]+/).map(name => name.trim()).filter(name => name.length > 0);
-                console.log(`✅ 从项目文件加载 ${students.length} 名学生`);
-                // 同时更新临时目录
-                await fs.writeFile('/tmp/classmate.txt', students.join('\n'), 'utf8');
-                return students;
+                if (students.length > 0) {
+                    console.log(`✅ 从项目文件加载 ${students.length} 名学生`);
+                    // 同时更新临时目录
+                    await fs.writeFile('/tmp/classmate.txt', students.join('\n'), 'utf8');
+                    return students;
+                }
             } catch (projectError) {
                 console.warn('⚠️ 项目文件读取失败，使用默认名单:', projectError.message);
             }
@@ -175,10 +204,12 @@ async function loadStudents() {
 
 async function saveMetadata(metadata) {
     try {
+        console.log(`💾 保存元数据到: ${METADATA_FILE}`);
         await fs.writeFile(METADATA_FILE, JSON.stringify(metadata, null, 2), 'utf8');
+        console.log(`✅ 成功保存 ${metadata.length} 条文件记录`);
         return true;
     } catch (error) {
-        console.error('保存元数据失败:', error);
+        console.error('❌ 保存元数据失败:', error);
         return false;
     }
 }
@@ -203,6 +234,24 @@ app.get('/health', (req, res) => {
     });
 });
 
+// 检查学生的文件状态
+app.get('/student/:studentName', async (req, res) => {
+    try {
+        const studentName = decodeURIComponent(req.params.studentName);
+        const metadata = await loadMetadata();
+        const file = metadata.find(file => file.student === studentName);
+        
+        res.json({
+            success: true,
+            hasFile: !!file,
+            file: file || null
+        });
+    } catch (error) {
+        console.error('检查学生文件失败:', error);
+        res.status(500).json({ success: false, message: '检查失败' });
+    }
+});
+
 // 获取学生列表
 app.get('/students', async (req, res) => {
     try {
@@ -216,21 +265,24 @@ app.get('/students', async (req, res) => {
     }
 });
 
-// 文件上传接口 - 简化版本
+// 文件上传接口
 app.post('/upload', upload.single('file'), async (req, res) => {
     console.log('📤 上传请求开始:', {
         hasFile: !!req.file,
         student: req.body?.student,
-        contentType: req.get('Content-Type')
+        contentType: req.get('Content-Type'),
+        fileSize: req.file?.size
     });
 
     try {
         // 基本验证
         if (!req.file) {
+            console.log('❌ 没有选择文件');
             return res.status(400).json({ success: false, message: '没有选择文件' });
         }
 
         if (!req.body || !req.body.student) {
+            console.log('❌ 没有选择学生姓名');
             return res.status(400).json({ success: false, message: '请选择学生姓名' });
         }
 
@@ -242,11 +294,13 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         
         // 加载现有数据
         const metadata = await loadMetadata();
+        console.log(`📖 当前有 ${metadata.length} 条文件记录`);
         
         // 检查该学生是否已经上传过文件
         const existingFile = metadata.find(file => file.student === student);
         
         if (existingFile && !req.body.isUpdate) {
+            console.log('⚠️ 学生已上传过文件:', existingFile.originalName);
             return res.status(400).json({ 
                 success: false, 
                 message: '你已经上传过文件，如需修改请选择更新文件',
@@ -269,19 +323,29 @@ app.post('/upload', upload.single('file'), async (req, res) => {
             data: req.file.buffer.toString('base64')
         };
 
+        console.log('📝 创建文件记录:', {
+            id: fileRecord.id,
+            name: fileRecord.originalName,
+            student: fileRecord.student,
+            dataSize: fileRecord.data.length
+        });
+
         // 如果是更新，删除旧记录
         if (existingFile && req.body.isUpdate) {
             const index = metadata.findIndex(file => file.id === existingFile.id);
             if (index !== -1) {
                 metadata[index] = fileRecord;
+                console.log(`🔄 更新文件记录: ${existingFile.id}`);
             }
         } else {
             metadata.push(fileRecord);
+            console.log(`➕ 添加新文件记录: ${fileRecord.id}`);
         }
         
         // 保存元数据
         const saved = await saveMetadata(metadata);
         if (!saved) {
+            console.log('❌ 保存元数据失败');
             return res.status(500).json({ success: false, message: '保存文件信息失败' });
         }
 
@@ -348,9 +412,11 @@ app.delete('/files/:id', async (req, res) => {
             return res.status(404).json({ success: false, message: '文件不存在' });
         }
         
+        const file = metadata[fileIndex];
         metadata.splice(fileIndex, 1);
         await saveMetadata(metadata);
         
+        console.log(`🗑️ 删除文件: ${file.originalName} (${file.student})`);
         res.json({ success: true, message: '文件删除成功' });
     } catch (error) {
         console.error('Delete error:', error);
@@ -396,6 +462,7 @@ app.listen(PORT, async () => {
     try {
         console.log('🚀 正在启动服务器...');
         
+        await ensureDirectories();
         await ensureUploadDir();
         await initProductionData();
         
@@ -409,6 +476,10 @@ app.listen(PORT, async () => {
         // 测试学生列表加载
         const testStudents = await loadStudents();
         console.log(`👥 测试学生列表加载: ${testStudents.length} 人`);
+        
+        // 测试元数据加载
+        const testMetadata = await loadMetadata();
+        console.log(`📁 测试元数据加载: ${testMetadata.length} 条记录`);
         
     } catch (error) {
         console.error('❌ 服务器启动失败:', error);
