@@ -23,8 +23,8 @@ app.use(express.static('.'));
 
 // 性能优化配置
 const MEMORY_LIMIT = 5 * 1024 * 1024;   // 5MB - 内存存储
-const DISK_LIMIT = 20 * 1024 * 1024;   // 20MB - 磁盘存储
-const MAX_LIMIT = 50 * 1024 * 1024;    // 50MB - 最大限制
+const DISK_LIMIT = 100 * 1024 * 1024;  // 100MB - 磁盘存储
+const MAX_LIMIT = 100 * 1024 * 1024;   // 100MB - 最大限制
 
 const UPLOAD_DIR = process.env.NODE_ENV === 'production' 
     ? '/tmp/uploads' 
@@ -427,7 +427,7 @@ app.post('/upload', createUploader().single('file'), async (req, res) => {
         } else {
             return res.status(400).json({ 
                 success: false, 
-                message: `文件大小超过限制 (最大${MAX_LIMIT / 1024 / 1024}MB)` 
+                message: `文件过大，超过${MAX_LIMIT / 1024 / 1024}MB限制。请压缩后重试。` 
             });
         }
         

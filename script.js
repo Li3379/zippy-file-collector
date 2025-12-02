@@ -3,6 +3,7 @@ class FileUploadSystem {
         this.students = [];
         this.currentStudentFile = null;
         this.isUpdateMode = false;
+        this.MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
         this.init();
     }
 
@@ -183,6 +184,14 @@ class FileUploadSystem {
             if (!validTypes.includes(fileExtension)) {
                 uploadBtn.disabled = true;
                 this.showMessage('请选择支持的压缩文件格式 (.zip, .rar, .7z, .tar, .gz)', 'error');
+                return;
+            }
+
+            // 检查文件大小
+            if (file.size > this.MAX_FILE_SIZE) {
+                uploadBtn.disabled = true;
+                this.showMessage('文件过大，超过100MB限制。请压缩后重试。', 'error');
+                return;
             }
         }
     }
@@ -203,6 +212,12 @@ class FileUploadSystem {
         
         if (!validTypes.includes(fileExtension)) {
             this.showMessage('文件格式不支持，请选择压缩文件', 'error');
+            return;
+        }
+
+        // 检查文件大小
+        if (file.size > this.MAX_FILE_SIZE) {
+            this.showMessage('文件过大，超过100MB限制。请压缩后重试。', 'error');
             return;
         }
 
