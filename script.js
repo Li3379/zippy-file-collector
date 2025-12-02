@@ -277,6 +277,67 @@ class FileUploadSystem {
         }
     }
 
+    // 下载文件功能
+    async downloadFile(fileId, fileName) {
+        try {
+            this.showMessage('开始下载...', 'success');
+            
+            const response = await fetch(`/download/${fileId}`);
+            
+            if (!response.ok) {
+                const errorData = await response.json();
+                this.showMessage(errorData.message || '下载失败', 'error');
+                return;
+            }
+            
+            // 获取文件blob
+            const blob = await response.blob();
+            
+            // 创建下载链接
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            // 清理URL对象
+            window.URL.revokeObjectURL(url);
+            
+            this.showMessage(`文件 "${fileName}" 下载完成`, 'success');
+            
+        } catch (error) {
+            console.error('Download error:', error);
+            this.showMessage('下载失败: ' + error.message, 'error');
+        }
+    }
+
+    // 删除文件功能
+    async deleteFile(fileId, fileName) {
+        if (!confirm(`确定要删除文件 "${fileName}" 吗？此操作不可恢复。`)) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`/files/${fileId}`, {
+                method: 'DELETE'
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                this.showMessage(`文件 "${fileName}" 删除成功`, 'success');
+                this.loadFiles(); // 重新加载文件列表
+            } else {
+                this.showMessage(result.message || '删除失败', 'error');
+            }
+        } catch (error) {
+            console.error('Delete error:', error);
+            this.showMessage('删除失败: ' + error.message, 'error');
+        }
+    }
+
     displayFiles(files) {
         const filesList = document.getElementById('filesList');
         
@@ -303,6 +364,14 @@ class FileUploadSystem {
                         <span>🗂️ ${file.extension}</span>
                     </div>
                     ${file.description ? `<div class="file-description">"${file.description}"</div>` : ''}
+                    <div class="file-actions">
+                        <button class="download-btn" onclick="fileSystem.downloadFile(${file.id}, '${file.originalName}')">
+                            📥 下载
+                        </button>
+                        <button class="delete-btn" onclick="fileSystem.deleteFile(${file.id}, '${file.originalName}')">
+                            🗑️ 删除
+                        </button>
+                    </div>
                 </div>
             `;
         }).join('');
@@ -388,6 +457,9 @@ class FileUploadSystem {
     }
 }
 
+// 创建全局实例以便事件处理
+let fileSystem;
+
 document.addEventListener('DOMContentLoaded', () => {
-    new FileUploadSystem();
+    fileSystem = new FileUploadSystem();
 });
