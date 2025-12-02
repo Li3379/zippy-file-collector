@@ -32,8 +32,8 @@ const UPLOAD_DIR = process.env.NODE_ENV === 'production'
 
 const allowedExtensions = ['.zip', '.rar', '.7z', '.tar', '.gz'];
 
-// 混合存储方案
-const mixedStorage = multer.diskStorage({
+// 磁盘存储方案
+const diskStorage = multer.diskStorage({
     destination: async (req, file, cb) => {
         await ensureUploadDir();
         cb(null, UPLOAD_DIR);
@@ -67,30 +67,56 @@ const fileFilter = (req, file, cb) => {
     }
 };
 
-// 动态选择存储方式
-function getStorage(fileSize) {
-    if (fileSize <= MEMORY_LIMIT) {
-        console.log(`🧠 使用内存存储 (${Math.round(fileSize / 1024 / 1024)}MB)`);
-        return memoryStorage;
-    } else if (fileSize <= DISK_LIMIT) {
-        console.log(`💾 使用磁盘存储 (${Math.round(fileSize / 1024 / 1024)}MB)`);
-        return mixedStorage;
-    } else {
-        throw new Error(`文件大小超过限制 (最大${MAX_LIMIT / 1024 / 1024}MB)`);
+// 动态存储选择中间件
+const dynamicStorage = {
+    _handleFile: null,
+    _storageType: 'unknown',
+    
+    _getStorage: function(fileSize) {
+        if (fileSize <= MEMORY_LIMIT) {
+            this._storageType = 'memory';
+            console.log(`🧠 使用内存存储 (${Math.round(fileSize / 1024 / 1024)}MB)`);
+            return memoryStorage;
+        } else if (fileSize <= DISK_LIMIT) {
+            this._storageType = 'disk';
+            console.log(`💾 使用磁盘存储 (${Math.round(fileSize / 1024 / 1024)}MB)`);
+            return diskStorage;
+        } else {
+            throw new Error(`文件大小超过限制 (最大${MAX_LIMIT / 1024 / 1024}MB)`);
+        }
+    },
+    
+    _processFile: function(req, file, cb) {
+        const fileSize = file.size || (req.file && req.file.size);
+        const storage = this._getStorage(fileSize);
+        storage._handleFile(req, file, cb);
+    },
+    
+    _removeFile: function(req, file, cb) {
+        if (this._storageType === 'disk' && diskStorage._removeFile) {
+            diskStorage._removeFile(req, file, cb);
+        } else {
+            cb(null);
+        }
     }
-}
+};
 
-// 创建上传器中间件
-function createUploader() {
-    return upload = multer({
-        storage: multer.memoryStorage(), // 先使用内存，在处理时决定
-        limits: {
-            fileSize: MAX_LIMIT,
-            files: 1
+// 创建multer实例
+const upload = multer({
+    storage: {
+        _handleFile: function(req, file, cb) {
+            dynamicStorage._processFile(req, file, cb);
         },
-        fileFilter: fileFilter
-    });
-}
+        _removeFile: function(req, file, cb) {
+            dynamicStorage._removeFile(req, file, cb);
+        }
+    },
+    limits: {
+        fileSize: MAX_LIMIT,
+        files: 1
+    },
+    fileFilter: fileFilter
+});
 
 // 元数据文件路径
 const METADATA_FILE = process.env.NODE_ENV === 'production'
@@ -233,27 +259,6 @@ async function loadMetadata() {
     }
 }
 
-async function saveMetadata(metadata) {
-    try {
-        console.log(`💾 保存元数据到: ${METADATA_FILE}`);
-        const startTime = Date.now();
-        
-        await fs.writeFile(METADATA_FILE, JSON.stringify(metadata, null, 2), 'utf8');
-        
-        const duration = Date.now() - startTime;
-        console.log(`✅ 成功保存 ${metadata.length} 条文件记录 (${duration}ms)`);
-        
-        // 清除缓存
-        metadataCache.clear();
-        fileCache.clear();
-        
-        return true;
-    } catch (error) {
-        console.error('❌ 保存元数据失败:', error);
-        return false;
-    }
-}
-
 async function loadStudents() {
     try {
         let dataPath;
@@ -294,6 +299,25 @@ async function loadStudents() {
     } catch (error) {
         console.warn('⚠️ 学生名单加载失败，使用默认名单:', error.message);
         return ['张三', '李四', '王五', '赵六', '钱七'];
+    }
+}
+
+async function saveMetadata(metadata) {
+    try {
+        console.log(`💾 保存元数据到: ${METADATA_FILE}`);
+        const startTime = Date.now();
+        await fs.writeFile(METADATA_FILE, JSON.stringify(metadata, null, 2), 'utf8');
+        const duration = Date.now() - startTime;
+        console.log(`✅ 成功保存 ${metadata.length} 条文件记录 (${duration}ms)`);
+        
+        // 清除缓存
+        metadataCache.clear();
+        fileCache.clear();
+        
+        return true;
+    } catch (error) {
+        console.error('❌ 保存元数据失败:', error);
+        return false;
     }
 }
 
@@ -363,8 +387,8 @@ app.get('/students', async (req, res) => {
     }
 });
 
-// 创建动态上传中间件
-app.post('/upload', createUploader().single('file'), async (req, res) => {
+// 文件上传接口 - 真正的动态存储
+app.post('/upload', upload.single('file'), async (req, res) => {
     console.log('📤 上传请求开始:', {
         hasFile: !!req.file,
         student: req.body?.student,
@@ -385,12 +409,24 @@ app.post('/upload', createUploader().single('file'), async (req, res) => {
         const extension = path.extname(originalName).toLowerCase();
         const student = req.body.student.trim();
         
-        // 根据文件大小决定存储方式
+        console.log('📄 处理文件:', { originalName, extension, student, size: fileSize });
+        
+        // 检查文件大小限制
+        if (fileSize > MAX_LIMIT) {
+            return res.status(400).json({ 
+                success: false, 
+                message: `文件过大，超过${MAX_LIMIT / 1024 / 1024}MB限制。请压缩后重试。` 
+            });
+        }
+        
+        // 根据文件大小决定存储方式并处理
         let fileRecord;
         const startTime = Date.now();
         
         if (fileSize <= MEMORY_LIMIT) {
             // 小文件：内存存储
+            console.log(`🧠 使用内存存储 (${Math.round(fileSize / 1024 / 1024)}MB)`);
+            
             fileRecord = {
                 id: Date.now(),
                 fileName: req.file.originalname,
@@ -405,12 +441,15 @@ app.post('/upload', createUploader().single('file'), async (req, res) => {
             };
         } else if (fileSize <= DISK_LIMIT) {
             // 大文件：磁盘存储
+            console.log(`💾 使用磁盘存储 (${Math.round(fileSize / 1024 / 1024)}MB)`);
+            
             await ensureUploadDir();
             const timestamp = Date.now();
             const diskFileName = `${timestamp}_${originalName}`;
             const filePath = path.join(UPLOAD_DIR, diskFileName);
             
             await fs.writeFile(filePath, req.file.buffer);
+            console.log(`💾 文件已保存到: ${filePath}`);
             
             fileRecord = {
                 id: Date.now(),
@@ -431,13 +470,6 @@ app.post('/upload', createUploader().single('file'), async (req, res) => {
             });
         }
         
-        console.log('📄 处理文件:', { 
-            name: originalName, 
-            student, 
-            size: fileSize, 
-            storage: fileRecord.storageType 
-        });
-        
         // 加载现有数据
         const metadata = await loadMetadata();
         console.log(`📖 当前有 ${metadata.length} 条文件记录`);
@@ -455,20 +487,19 @@ app.post('/upload', createUploader().single('file'), async (req, res) => {
             });
         }
         
-        // 更新或添加记录
+        // 如果是更新，先删除旧文件
         if (existingFile && req.body.isUpdate) {
+            if (existingFile.storageType === 'disk' && existingFile.filePath) {
+                try {
+                    await fs.unlink(existingFile.filePath);
+                    console.log('🗑️ 删除旧磁盘文件:', existingFile.filePath);
+                } catch (deleteError) {
+                    console.warn('⚠️ 删除旧文件失败:', deleteError.message);
+                }
+            }
+            
             const index = metadata.findIndex(file => file.id === existingFile.id);
             if (index !== -1) {
-                // 删除旧文件（如果是磁盘存储）
-                if (existingFile.storageType === 'disk' && existingFile.filePath) {
-                    try {
-                        await fs.unlink(existingFile.filePath);
-                        console.log('🗑️ 删除旧文件:', existingFile.filePath);
-                    } catch (deleteError) {
-                        console.warn('⚠️ 删除旧文件失败:', deleteError.message);
-                    }
-                }
-                
                 metadata[index] = fileRecord;
                 console.log(`🔄 更新文件记录: ${existingFile.id}`);
             }
@@ -504,7 +535,7 @@ app.post('/upload', createUploader().single('file'), async (req, res) => {
         console.error('❌ 上传错误详情:', error);
         
         if (error.code === 'LIMIT_FILE_SIZE') {
-            return res.status(400).json({ success: false, message: '文件大小超过限制' });
+            return res.status(400).json({ success: false, message: '文件过大，超过100MB限制。请压缩后重试。' });
         }
         
         if (error.message && error.message.includes('不支持的文件格式')) {
@@ -573,6 +604,7 @@ app.delete('/files/:id', async (req, res) => {
     }
 });
 
+// 下载文件 - 支持所有存储方式
 app.get('/download/:id', async (req, res) => {
     try {
         const fileId = parseInt(req.params.id);
@@ -590,22 +622,36 @@ app.get('/download/:id', async (req, res) => {
             if (!fileRecord.data) {
                 return res.status(404).json({ success: false, message: '文件数据不存在' });
             }
+            console.log(`🧠 从内存恢复文件: ${fileRecord.originalName}`);
             fileBuffer = Buffer.from(fileRecord.data, 'base64');
         } else if (fileRecord.storageType === 'disk') {
             // 从磁盘读取
+            if (!fileRecord.filePath) {
+                return res.status(404).json({ success: false, message: '磁盘文件路径不存在' });
+            }
+            
             try {
+                console.log(`💾 从磁盘读取文件: ${fileRecord.filePath}`);
                 fileBuffer = await fs.readFile(fileRecord.filePath);
             } catch (readError) {
-                return res.status(404).json({ success: false, message: '磁盘文件不存在' });
+                console.error('❌ 读取磁盘文件失败:', readError);
+                return res.status(404).json({ success: false, message: '磁盘文件不存在或损坏' });
             }
+        } else {
+            return res.status(400).json({ success: false, message: '不支持的文件存储类型' });
         }
         
+        // 设置下载头
         res.setHeader('Content-Type', 'application/octet-stream');
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileRecord.originalName)}"`);
+        res.setHeader('Content-Length', fileBuffer.length);
+        
+        console.log(`📥 开始下载文件: ${fileRecord.originalName} (${fileRecord.storageType})`);
         res.send(fileBuffer);
+        console.log(`✅ 文件下载完成: ${fileRecord.originalName}`);
         
     } catch (error) {
-        console.error('Download error:', error);
+        console.error('❌ 下载错误:', error);
         res.status(500).json({ success: false, message: '文件下载失败' });
     }
 });
@@ -627,12 +673,12 @@ app.listen(PORT, async () => {
         console.log(`✅ 文件上传系统已启动`);
         console.log(`🌐 端口: ${PORT}`);
         console.log(`🌍 环境: ${process.env.NODE_ENV || 'development'}`);
-        console.log(`💾 存储策略: 混合存储 (内存≤5MB, 磁盘≤20MB)`);
+        console.log(`💾 存储策略: 智能混合存储 (≤5MB内存, >5MB磁盘)`);
         console.log(`📄 最大文件大小: ${MAX_LIMIT / 1024 / 1024}MB`);
         console.log(`🔗 健康检查: http://localhost:${PORT}/health`);
         
         // 定期性能监控
-        setInterval(logPerformance, 60000); // 每分钟记录一次性能
+        setInterval(logPerformance, 60000); // 每分钟记录一次
         
     } catch (error) {
         console.error('❌ 服务器启动失败:', error);
