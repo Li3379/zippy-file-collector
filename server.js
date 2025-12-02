@@ -2,10 +2,9 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
-const cors = require('cors');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // 腾讯云运行环境需要
 app.use((req, res, next) => {
@@ -19,7 +18,6 @@ app.use((req, res, next) => {
     }
 });
 
-app.use(cors());
 app.use(express.json());
 app.use(express.static('.'));
 
@@ -136,6 +134,20 @@ async function getFileInfo(filePath) {
     }
 }
 
+// 腾讯云运行环境健康检查
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        port: PORT,
+        env: process.env.NODE_ENV || 'development'
+    });
+});
+
 app.post('/upload', upload.single('file'), async (req, res) => {
     try {
         if (!req.file) {
@@ -226,8 +238,18 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         if (error.message.includes('不支持的文件格式')) {
             return res.status(400).json({ success: false, message: error.message });
         }
+        
+        res.status(500).json({ success: false, message: '文件上传失败' });
+    }
+});
 
-        res.status(500).json({ success: false, message: '服务器错误：' + error.message });
+app.get('/students', async (req, res) => {
+    try {
+        const students = await loadStudents();
+        res.json({ success: true, students });
+    } catch (error) {
+        console.error('Error loading students:', error);
+        res.status(500).json({ success: false, message: '加载学生列表失败' });
     }
 });
 
@@ -236,70 +258,80 @@ app.get('/files', async (req, res) => {
         const metadata = await loadMetadata();
         const students = await loadStudents();
         
-        const validFiles = [];
+        // 获取已上传的学生列表
+        const uploadedStudents = new Set(metadata.map(file => file.student));
         
-        for (const fileRecord of metadata) {
-            const fileInfo = await getFileInfo(fileRecord.path);
-            if (fileInfo) {
-                validFiles.push({
-                    ...fileRecord,
-                    uploadDate: fileRecord.uploadDate
-                });
-            }
-        }
-
-        const sortedFiles = validFiles.sort((a, b) => 
-            new Date(b.uploadDate) - new Date(a.uploadDate)
-        );
-        
-        // 找出未上传的学生
-        const uploadedStudents = new Set(validFiles.map(file => file.student));
+        // 获取未上传的学生列表
         const unuploadedStudents = students.filter(student => !uploadedStudents.has(student));
-
+        
         res.json({
-            files: sortedFiles,
-            unuploadedStudents: unuploadedStudents,
+            success: true,
+            files: metadata,
+            unuploadedStudents,
             totalStudents: students.length,
             uploadedCount: uploadedStudents.size,
             unuploadedCount: unuploadedStudents.length
         });
     } catch (error) {
         console.error('Error loading files:', error);
-        res.status(500).json({ error: '加载文件列表失败' });
+        res.status(500).json({ success: false, message: '加载文件列表失败' });
     }
 });
 
-app.get('/student/:name', async (req, res) => {
+app.get('/download/:filename', async (req, res) => {
     try {
-        const studentName = decodeURIComponent(req.params.name);
+        const filename = req.params.filename;
         const metadata = await loadMetadata();
+        const fileRecord = metadata.find(file => file.fileName === filename);
         
-        const studentFile = metadata.find(file => file.student === studentName);
-        
-        if (studentFile) {
-            const fileInfo = await getFileInfo(studentFile.path);
-            if (fileInfo) {
-                res.json({
-                    hasFile: true,
-                    file: {
-                        ...studentFile,
-                        uploadDate: studentFile.uploadDate
-                    }
-                });
-            } else {
-                res.json({ hasFile: false });
-            }
-        } else {
-            res.json({ hasFile: false });
+        if (!fileRecord) {
+            return res.status(404).json({ success: false, message: '文件不存在' });
         }
+        
+        const filePath = fileRecord.path;
+        
+        // 检查文件是否存在
+        try {
+            await fs.access(filePath);
+        } catch (error) {
+            return res.status(404).json({ success: false, message: '文件已被删除' });
+        }
+        
+        res.download(filePath, fileRecord.originalName);
     } catch (error) {
-        console.error('Error getting student file:', error);
-        res.status(500).json({ error: '获取学生文件信息失败' });
+        console.error('Download error:', error);
+        res.status(500).json({ success: false, message: '文件下载失败' });
     }
 });
 
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.delete('/files/:filename', async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const metadata = await loadMetadata();
+        const fileIndex = metadata.findIndex(file => file.fileName === filename);
+        
+        if (fileIndex === -1) {
+            return res.status(404).json({ success: false, message: '文件不存在' });
+        }
+        
+        const fileRecord = metadata[fileIndex];
+        
+        // 删除文件
+        try {
+            await fs.unlink(fileRecord.path);
+        } catch (error) {
+            console.error('Error deleting file:', error);
+        }
+        
+        // 从元数据中删除
+        metadata.splice(fileIndex, 1);
+        await saveMetadata(metadata);
+        
+        res.json({ success: true, message: '文件删除成功' });
+    } catch (error) {
+        console.error('Delete error:', error);
+        res.status(500).json({ success: false, message: '文件删除失败' });
+    }
 });
 
 app.use((err, req, res, next) => {
@@ -307,27 +339,22 @@ app.use((err, req, res, next) => {
     res.status(500).json({ success: false, message: '服务器内部错误' });
 });
 
+// 启动服务器
 app.listen(PORT, async () => {
-    await ensureUploadDir();
-    await initProductionData();
-    console.log(`文件上传系统已启动`);
-    console.log(`端口: ${PORT}`);
-    console.log(`环境: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`上传目录: ${UPLOAD_DIR}`);
-    console.log(`支持文件类型: ${allowedExtensions.join(', ')}`);
-    console.log(`最大文件大小: ${MAX_FILE_SIZE / 1024 / 1024}MB`);
-});
-
-// 腾讯云运行环境健康检查
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        timestamp: new Date().toISOString(),
-        port: PORT,
-        env: process.env.NODE_ENV || 'development'
-    });
+    try {
+        await ensureUploadDir();
+        await initProductionData();
+        console.log(`文件上传系统已启动`);
+        console.log(`端口: ${PORT}`);
+        console.log(`环境: ${process.env.NODE_ENV || 'development'}`);
+        console.log(`上传目录: ${UPLOAD_DIR}`);
+        console.log(`支持文件类型: ${allowedExtensions.join(', ')}`);
+        console.log(`最大文件大小: ${MAX_FILE_SIZE / 1024 / 1024}MB`);
+        
+        // 测试健康检查
+        console.log('健康检查: http://localhost:' + PORT + '/health');
+    } catch (error) {
+        console.error('服务器启动失败:', error);
+        process.exit(1);
+    }
 });
