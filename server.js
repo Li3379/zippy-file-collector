@@ -49,12 +49,13 @@ const diskStorage = multer.diskStorage({
 // 内存存储方案
 const memoryStorage = multer.memoryStorage();
 
+// 简化的文件过滤器 - 只检查文件格式，不检查大小
 const fileFilter = (req, file, cb) => {
     try {
         const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
         const ext = path.extname(originalName).toLowerCase();
         
-        console.log('文件检查:', { originalName, ext, size: file.size });
+        console.log('文件格式检查:', { originalName, ext });
         
         if (allowedExtensions.includes(ext)) {
             cb(null, true);
@@ -67,50 +68,9 @@ const fileFilter = (req, file, cb) => {
     }
 };
 
-// 动态存储选择中间件
-const dynamicStorage = {
-    _handleFile: null,
-    _storageType: 'unknown',
-    
-    _getStorage: function(fileSize) {
-        if (fileSize <= MEMORY_LIMIT) {
-            this._storageType = 'memory';
-            console.log(`🧠 使用内存存储 (${Math.round(fileSize / 1024 / 1024)}MB)`);
-            return memoryStorage;
-        } else if (fileSize <= DISK_LIMIT) {
-            this._storageType = 'disk';
-            console.log(`💾 使用磁盘存储 (${Math.round(fileSize / 1024 / 1024)}MB)`);
-            return diskStorage;
-        } else {
-            throw new Error(`文件大小超过限制 (最大${MAX_LIMIT / 1024 / 1024}MB)`);
-        }
-    },
-    
-    _processFile: function(req, file, cb) {
-        const fileSize = file.size || (req.file && req.file.size);
-        const storage = this._getStorage(fileSize);
-        storage._handleFile(req, file, cb);
-    },
-    
-    _removeFile: function(req, file, cb) {
-        if (this._storageType === 'disk' && diskStorage._removeFile) {
-            diskStorage._removeFile(req, file, cb);
-        } else {
-            cb(null);
-        }
-    }
-};
-
-// 创建multer实例
+// 创建上传器 - 使用内存存储，在upload路由中处理动态存储
 const upload = multer({
-    storage: {
-        _handleFile: function(req, file, cb) {
-            dynamicStorage._processFile(req, file, cb);
-        },
-        _removeFile: function(req, file, cb) {
-            dynamicStorage._removeFile(req, file, cb);
-        }
-    },
+    storage: memoryStorage,
     limits: {
         fileSize: MAX_LIMIT,
         files: 1
@@ -387,12 +347,11 @@ app.get('/students', async (req, res) => {
     }
 });
 
-// 文件上传接口 - 真正的动态存储
+// 文件上传接口 - 修复文件大小获取
 app.post('/upload', upload.single('file'), async (req, res) => {
     console.log('📤 上传请求开始:', {
         hasFile: !!req.file,
-        student: req.body?.student,
-        fileSize: req.file?.size
+        student: req.body?.student
     });
 
     try {
@@ -419,7 +378,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
             });
         }
         
-        // 根据文件大小决定存储方式并处理
+        // 根据文件大小决定存储方式
         let fileRecord;
         const startTime = Date.now();
         
@@ -464,6 +423,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
                 filePath: filePath
             };
         } else {
+            // 这种情况理论上不会发生，因为前面已经检查了
             return res.status(400).json({ 
                 success: false, 
                 message: `文件过大，超过${MAX_LIMIT / 1024 / 1024}MB限制。请压缩后重试。` 
